@@ -1,0 +1,295 @@
+#!/usr/bin/env ruby
+# -*- coding: utf-8 -*-
+
+require 'fileutils'
+
+begin 
+  require 'subcommand'
+rescue LoadError
+  warn "this command needs 'subcommand' gem. please install it and retry"
+  exit
+end
+
+#= Makefile, のあるプロジェクトルートを取得
+def recur_find_rootdir(cur)
+  return nil if cur == "/"
+  
+  if File.directory? cur 
+    if Dir.entries(cur).find{|x| x == "CMakeLists.txt" || x=="Makefile" }
+      return cur
+    else
+      recur_find_rootdir(File.expand_path("..", cur))
+    end
+  end
+end
+
+
+def _build_dir(proot_dir)
+  File.expand_path("build", proot_dir)
+end
+
+def build(root, opts={ })
+  path = _build_dir(root)
+  
+  extra_env=""
+  if !ENV['CC'].nil?
+    extra_env << "CC=#{ENV['CC']}"
+  end
+  
+  exec_cmd = if !File.exist?(File.expand_path("Makefile", path))
+               "cd #{path}; #{extra_env} xcodebuild"
+             else
+               "cd #{path}; #{extra_env} make all"
+             end
+  warn exec_cmd
+
+  system(exec_cmd)
+end
+
+def run(root, argv, opts={ })
+  opts = { :verbose => 2}.merge(opts)
+  
+  ENV["GLOG_v"]=opts[:verbose].to_s
+  path = _build_dir(root)
+
+  if !File.exist?(File.expand_path("Makefile", path))
+    #xcode
+    dirs = ["Debug", "Release"]
+    dirs.map{ |d| File.expand_path(d, path)}.each do |dir|
+      Dir.foreach(dir) do |f|
+        pt = File.expand_path(f, dir)
+        if File.file?(pt) && File.executable?(pt)
+          warn pt
+          system("#{pt}")
+          return
+        end
+      end if File.exist? dir
+    end
+  else
+    Dir.foreach(path) do |f|
+      pt = File.expand_path(f, path)
+      if File.file?(pt) && File.executable?(pt) && pt !~ /\.dylib$/
+        warn pt
+        system("#{pt}")
+        return
+      end
+    end
+  end
+end
+
+def init(root, opts={ })
+  force = opts[:force]
+  path = _build_dir(root)
+  unless File.exist?(path)
+    warn "create dir #{path}"
+    FileUtils.mkdir path
+  end
+  
+  cache_file = File.expand_path("CMakeCache.txt", path)
+  if force && File.exist?(cache_file)
+    FileUtils.rm cache_file
+  end
+  
+  #generator
+  
+  generator_name = "Unix Makefiles"
+  case 
+    when opts[:xcode]
+    #xcode指定時にコンパイラー入れ替えるとエラーしゅうりょうしちゃう...
+    generator_name = "Xcode"
+    else
+    #compiler
+    cc, cxx = case
+              when opts[:gcc]
+                ["gcc", "g++"]
+              when opts[:clang]
+                ["clang", "clang++"]
+              else
+                ["clang", "clang++"]
+              end
+
+    ENV["CC"] = cc
+    ENV["CXX"] = cxx
+  end
+  
+  #mode
+  build_type = "Debug"
+  if opts[:release] == true
+    build_type = "Release"
+  end
+
+  cmd = "cd #{path};cmake -G \"#{generator_name}\" -D CMAKE_BUILD_TYPE=#{build_type} .."
+  warn cmd
+  system(cmd)
+end
+
+def distclean(root, opts={ })
+  path = _build_dir(root)
+  if File.exist?(path) && File.directory?(path)
+    warn "distclean #{path}"
+    FileUtils.remove_dir(path, true)
+  end
+end
+
+if __FILE__ == $0
+  include Subcommands
+  appname = File.basename($0)
+  options = { }  
+  proot_dir = recur_find_rootdir(Dir.pwd)
+
+  command :init do |opts|
+    opts.banner = "Usage: init [options]"
+    opts.description = "create cmake build dir and exec 'cmake ..'"
+
+    opts.on("--gcc", "use gcc compiler") do |v|
+      options[:gcc] = true
+    end
+    
+    opts.on("--clang", "use clang compiler. !default!") do |v|
+      options[:clang] = true
+    end
+    
+    opts.on('--release',"release mode. defalut debug mode.") do |v|
+      options[:release] = true
+    end
+    
+    opts.on("--xcode", "with xcode project") do |v|
+      options[:xcode] = true
+    end
+
+    opts.on("-f", "--force", "exec force") do |v|
+      options[:force] = true
+    end
+  end
+  
+  command :build do |opts|
+    opts.banner = "Usage: build [options]"
+    opts.description = "build with make" 
+    opts.on("--re", "project clean and reinit") do |v|
+      options[:re] = true
+    end
+  end
+
+  command :clean do |opts|
+    opts.banner = "Usage: clean [options]"
+    opts.description = "make clean"
+  end
+
+  command :distclean do |opts|
+    opts.banner = "Usage: distclean [options]"
+    opts.description = "clean all cmake files"
+  end
+  
+  command :run do |opts|
+    opts.banner = "Usage: run [options]"
+    opts.description = "run file"
+    opts.on("-v VAL", "verbose level") do |v|
+      options[:verbose] = v
+    end
+  end
+  
+  command :all do |opts|
+    opts.banner = "Usage: all [options]"
+    opts.description = "build & run"
+  end
+  
+  command :open do |opts|
+    opts.description = "open project"
+  end
+  
+  command :reboot do |opts|
+    opts.description = "distclean & init"
+    opts.on("--gcc", "use gcc compiler") do |v|
+      options[:gcc] = true
+    end
+    
+    opts.on("--clang", "use clang compiler. !default!") do |v|
+      options[:clang] = true
+    end
+    
+    opts.on('--release',"release mode. defalut debug mode.") do |v|
+      options[:release] = true
+    end
+    
+    opts.on("--xcode", "with xcode project") do |v|
+      options[:xcode] = true
+    end
+
+    opts.on("-f", "--force", "exec force") do |v|
+      options[:force] = true
+    end
+
+  end
+  
+  global_options do |opts|
+    opts.banner = "Usage: #{appname} [options] [subcommand [options]]"
+    opts.description = "Stupid program that does something"
+    opts.separator ""
+    opts.separator "Global options are:"
+    opts.on("-v", "--[no-]verbose", "Run verbosely") do |v|
+      options[:verbose] = v
+    end
+    opts.on("--list-actions", "list actions for autocompletion") do |v|
+      list_actions
+      exit 0
+    end
+  end
+
+  cmd = opt_parse()
+  
+  case cmd
+  when "init"
+    init(proot_dir, options)
+  when "distclean"
+    distclean(proot_dir, options)
+  when "reboot"
+    distclean(proot_dir, options)
+    init(proot_dir, options)
+  when "build"
+    if options[:re]
+      distclean(proot_dir)
+      init(proot_dir)
+      build(proot_dir, options)
+    else
+      build(proot_dir, options)
+    end
+  when "run"
+    run(proot_dir, ARGV.dup, options)
+  when "all"
+    #TODO initも呼び出す?
+    # init(proot_dir, options)
+    build(proot_dir, options)
+    run(proot_dir, options)
+  when "open"
+    build_dir = _build_dir(proot_dir)
+    Dir.foreach(build_dir) do |f|
+      if f =~ /\.xcodeproj$/
+        system("open #{File.expand_path(f, build_dir)}")
+      end
+    end
+  else
+    puts "show usage: #{appname} help"
+  end
+  
+  if $?.nil?
+    exit(0)
+  else
+    case
+    when $?.signaled?
+      warn "child #{$?.pid} was killed by signal #{$?.termsig}"
+      if $?.coredump?   # システムがこのステータスをサポートしてなければ常にfalse
+        warn "child #{$?.pid} dumped core."
+      end
+    when $?.stopped?
+      # 実際には Process.wait を使用しているので、ここに来ることはない
+      warn "child #{$?.pid} was stopped by signal #{$?.stopsig}"
+    when $?.exited?
+      warn "child #{$?.pid} exited normaly. status=#{$?.exitstatus}"
+      exit($?.exitstatus)
+    else
+      warn "unknown status %#x" % $?.to_i
+      exit($?.to_i)
+    end
+  end
+
+end
